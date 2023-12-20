@@ -1,0 +1,150 @@
+---
+title: "Spliced peptides in colon cancer (interim results)"
+author: "Jason Steen"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+### Background
+
+Given a list of peptides and some fastq files, identify how often each peptide is present in each sample
+
+Two data archives are given, 
+
+ * "GSA" https://ngdc.cncb.ac.cn/gsa/browse/CRA001257 
+ * "GEO" https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE163067  
+
+**Step 1:** download data from GSA
+
+List of accessions
+```
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038730/CRR038730.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038729/CRR038729.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038728/CRR038728.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038727/CRR038727.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038726/CRR038726.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038725/CRR038725.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038724/CRR038724.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038723/CRR038723.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038722/CRR038722.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038721/CRR038721.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038720/CRR038720.fq.gz
+ftp://download.big.ac.cn/gsa/CRA001257/CRR038719/CRR038719.fq.gz
+```
+
+**Step 2:** translate each read into each of 6 reading frames and search them for the peptides in the list patterns.
+I deleted the * that appears to signify either a L or an I from the peptides that contained it. We can interrogate this further by context of each peptide.
+```{python, python.reticulate=FALSE, eval=FALSE}
+#!/usr/bin/python3
+
+patterns = [
+"ALRPSTSSL",
+"WLMPVIPAL",
+"SADDIIIYL",
+"HLLQEELIL",
+"ILPKVIYRF",
+"GMYLKIIIT",
+"QLMALQQGL",
+"SLTKSLPAL",
+"VLLSNYASL",
+"YLDELLQVL",
+"YVDDLYVVL",
+"ELMKLLEEL",
+"HLYNLLLL",
+"KVPVGPVLV",
+"LLDQKDQLV",
+"LLLSNYASL",
+"IDDKGTIKL",
+"LIDDKGTIKL",
+"LLIDDKGTIKL",
+"NLLIDDKGTIKL",
+"ALIDDKGTIKL",
+"HLIDDKGTIKL",
+"LAIDDKGTLKL",
+"LGIDDKGTLKL",
+"LSIDDKGTLKL",
+"SLIDDKGTIKL",
+"TLIDDKGTIKL",
+"GMYLKIIIT",
+"HLLQEELIL",
+"LLLPAEVAIVHV",
+"SADDIIIYL",
+"FLFQDFLRQA",
+"FLIDDKGTIKL",
+"QYQQLLRSL",
+"SPIAERSMM"
+]
+
+with gzip.open(input_file, "rt") as file:
+    output = open(output_file, "a")
+    reads_to_keep = []
+    for record in SeqIO.parse(file, "fastq"):
+        sequence = record.seq
+        sequence_rev = sequence.reverse_complement()
+        for frame_start in range(3):
+            frame = translate(sequence[frame_start:])
+            rev_frame = translate(sequence_rev[frame_start:])
+            for pattern in patterns:
+                if pattern in frame:
+                    record_out = str("found " + pattern + " in " + sequence + " " + frame + "\n")
+                    reads_to_keep.append(record)
+                    output.write(record_out)            
+            for pattern in patterns:
+                if pattern in rev_frame:
+                    record_out2 = str("found " + pattern + " in " + sequence_rev + " " + rev_frame + "\n")   
+                    reads_to_keep.append(record)
+                    output.write(record_out2)
+    SeqIO.write(reads_to_keep, output_fastq, "fastq")
+
+
+```
+
+**Step 3:** add a quick header to each file so its easier to combine in R
+
+```{bash, eval=FALSE}
+#first subset the three interesting columns
+for i in *.txt; do awk 'BEGIN{FS=" ";OFS="\t"}{print $2, $4, $5}' $i > $i.cut; done
+#then add the header to each file, header.txt contains a single line "peptide read  context"
+for i in *.cut; do cat header.txt  $i > $i.head; done
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(dplyr)
+require(fs)
+require(tidyr)
+require(purrr)
+require(readr)
+require(knitr)
+```
+
+**Step 4:** take GSA data and combine them into a single dataframe, then display the table
+```{r GSA_data, message=FALSE, warning=FALSE}
+
+Files <- dir_ls("./", glob="*.head")
+List <- map(Files, read_delim) 
+Bind <- bind_rows(List, .id = 'Sample', ) %>% separate(Sample, into=c("Sample", NA, NA, NA), sep="[.]", remove=TRUE)
+a <- Bind %>% group_by(Sample, peptide) %>% summarise(n=n()) %>% pivot_wider(names_from=Sample, values_from=n)
+kable(a, caption = "Counts of each peptide per sample from GSA data")
+```
+
+
+**Step 5:** take SRA data and and combine them into a single dataframe, then display the table
+```{r SRA_data, message=FALSE, warning=FALSE}
+
+Files_SRA <- dir_ls("./SRA_data/", glob="*.head")
+List_SRA <- map(Files_SRA, read_delim) 
+Bind_SRA <- bind_rows(List_SRA, .id = 'Sample', ) %>% separate(Sample, into=c(NA, NA, NA, NA, "Sample", NA, NA, NA, NA), sep="[/_.]", remove=TRUE)
+b <- Bind_SRA %>% group_by(Sample, peptide) %>% summarise(n=n()) %>% pivot_wider(names_from=Sample, values_from=n)
+kable(b, caption = "Counts of each peptide per sample from SRA data")
+```
+
+
+
+#### Limitations and caveats
+ * this is interim data for evaluation of the method and should not be construed as a final result
+ * This counts raw data from fastq files.  we have not evaluated quality of basecalls in these reads
+ * peptides that are subsets of each other are likely counted together (ie, counts for "IDDKGTIKL" could well belong to either of the longer "LIDDKGTIKL" or "LLIDDKGTIKL" peptides.
+ * peptides that are not entirely present on a read will not be counted. we have made no attempts to assemble the reads into longer sequences. 
+
+
